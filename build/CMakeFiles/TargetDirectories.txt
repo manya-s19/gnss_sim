@@ -1,0 +1,3 @@
+/Users/manyasingla/Downloads/gnss_sim/build/CMakeFiles/gnss_sim.dir
+/Users/manyasingla/Downloads/gnss_sim/build/CMakeFiles/edit_cache.dir
+/Users/manyasingla/Downloads/gnss_sim/build/CMakeFiles/rebuild_cache.dir
