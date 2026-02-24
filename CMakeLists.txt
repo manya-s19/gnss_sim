@@ -9,6 +9,8 @@ add_executable(gnss_sim
     src/Satellite.cpp
     src/Receiver.cpp
     src/Visualizer.cpp
+    src/Spoofer.cpp
+    src/Detector.cpp
 )
 
 target_include_directories(gnss_sim PRIVATE
@@ -18,7 +20,6 @@ target_include_directories(gnss_sim PRIVATE
 
 target_link_libraries(gnss_sim
     ${OPENGL_LIBRARIES}
-    
     /opt/homebrew/Cellar/glfw/3.4/lib/libglfw.dylib
     "-framework Cocoa"
     "-framework IOKit"
