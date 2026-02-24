@@ -4,13 +4,14 @@
 #include "Satellite.h"
 
 struct ScenarioState {
-    std::vector<std::array<double,3>> truePath;     // drone's real positions
-    std::vector<std::array<double,3>> estPath;      // estimated positions
-    std::vector<bool> spoofDetected;                // detection at each step
-    std::array<double,3> pearsonPos;                // no-fly zone center
-    double noFlyRadius;
+    std::vector<std::array<double,2>> truePath;
+    std::vector<std::array<double,2>> estPath;
+    std::vector<bool> spoofDetected;
+    std::vector<bool> inNoFly;
+    std::array<double,2> pearsonLatLon;
+    double noFlyRadiusDeg;
     bool spoofMode;
 };
 
-void runVisualizer(std::vector<Satellite>& satellites,
-                   const ScenarioState& scenario);
+// Split-screen: normal on left, spoofed on right
+void runVisualizer(const ScenarioState& normal, const ScenarioState& spoofed);

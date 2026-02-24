@@ -2,243 +2,195 @@
 #include "Visualizer.h"
 #include </opt/homebrew/include/GLFW/glfw3.h>
 #include <OpenGL/gl.h>
+#include <iostream>
 #include <cmath>
 #include <vector>
 #include <array>
-#include <string>
 
-// ===== Camera =====
-static double camYaw=30, camPitch=25, camDist=3.5;
-static double lastX, lastY;
-static bool dragging=false;
-
-static void mouseButtonCB(GLFWwindow* w,int btn,int action,int){
-    if(btn==GLFW_MOUSE_BUTTON_LEFT){ dragging=(action==GLFW_PRESS); glfwGetCursorPos(w,&lastX,&lastY); }
-}
-static void cursorCB(GLFWwindow*,double x,double y){
-    if(!dragging) return;
-    camYaw  +=(x-lastX)*0.4; camPitch+=(y-lastY)*0.4;
-    camPitch=std::max(-89.0,std::min(89.0,camPitch));
-    lastX=x; lastY=y;
-}
-static void scrollCB(GLFWwindow*,double,double dy){
-    camDist-=dy*0.2; camDist=std::max(1.5,std::min(10.0,camDist));
+// Map lat/lon to local coords in [-1,1]
+static std::array<double,2> toLocal(double lat, double lon) {
+    const double cLat=43.6602, cLon=-79.5059, scale=3.5;
+    return { -(lon-cLon)*scale, (lat-cLat)*scale };
 }
 
-// ===== Draw helpers =====
-static void applyCamera(){
-    double yr=camYaw*M_PI/180, pr=camPitch*M_PI/180;
-    double cx=camDist*cos(pr)*sin(yr);
-    double cy=camDist*sin(pr);
-    double cz=camDist*cos(pr)*cos(yr);
-    double fx=-cx,fy=-cy,fz=-cz;
-    double fl=sqrt(fx*fx+fy*fy+fz*fz); fx/=fl;fy/=fl;fz/=fl;
-    double sx=fy*0-fz*1,sy=fz*0-fx*0,sz=fx*1-fy*0;
-    double sl=sqrt(sx*sx+sy*sy+sz*sz); sx/=sl;sy/=sl;sz/=sl;
-    double ux=sy*fz-sz*fy,uy=sz*fx-sx*fz,uz=sx*fy-sy*fx;
-    double mv[16]={sx,ux,-fx,0,sy,uy,-fy,0,sz,uz,-fz,0,
-        -(sx*cx+sy*cy+sz*cz),-(ux*cx+uy*cy+uz*cz),(fx*cx+fy*cy+fz*cz),1};
-    glLoadMatrixd(mv);
+static void drawCircle2D(double cx,double cy,double r,int seg,bool filled){
+    glBegin(filled?GL_TRIANGLE_FAN:GL_LINE_LOOP);
+    if(filled) glVertex2d(cx,cy);
+    for(int i=0;i<=seg;i++){double a=2*M_PI*i/seg; glVertex2d(cx+r*cos(a),cy+r*sin(a));}
+    glEnd();
 }
 
-static void drawSphere(double r,int sl,int st){
-    for(int i=0;i<st;i++){
-        double lat0=M_PI*(-0.5+(double)i/st), lat1=M_PI*(-0.5+(double)(i+1)/st);
-        double z0=sin(lat0),zr0=cos(lat0),z1=sin(lat1),zr1=cos(lat1);
-        glBegin(GL_QUAD_STRIP);
-        for(int j=0;j<=sl;j++){
-            double lng=2*M_PI*(double)j/sl,x=cos(lng),y=sin(lng);
-            glVertex3d(r*x*zr0,r*y*zr0,r*z0);
-            glVertex3d(r*x*zr1,r*y*zr1,r*z1);
-        }
+// Draw one panel (left or right half of screen)
+static void drawPanel(const ScenarioState& s, int animStep,
+                      double xOffset, double panelW, double panelH,
+                      bool isSpoof)
+{
+    // Precompute screen coords
+    auto sc=[&](std::array<double,2> p){ return toLocal(p[0],p[1]); };
+
+    auto pearsonL = sc(s.pearsonLatLon);
+
+    // No-fly zone
+    glColor4f(1,0.15f,0.15f,0.13f);
+    drawCircle2D(pearsonL[0],pearsonL[1],s.noFlyRadiusDeg*3.5,64,true);
+    glColor4f(1,0.15f,0.15f,1); glLineWidth(2.5f);
+    drawCircle2D(pearsonL[0],pearsonL[1],s.noFlyRadiusDeg*3.5,64,false);
+
+    // Pearson starburst
+    glLineWidth(2); glColor4f(1,0.3f,0.3f,0.8f);
+    for(int i=0;i<8;i++){
+        double a=i*M_PI/4;
+        glBegin(GL_LINES);
+        glVertex2d(pearsonL[0]+0.04*cos(a),pearsonL[1]+0.04*sin(a));
+        glVertex2d(pearsonL[0]+0.09*cos(a),pearsonL[1]+0.09*sin(a));
         glEnd();
     }
-}
 
-static void drawCircleXY(double r,int seg){
-    glBegin(GL_LINE_LOOP);
-    for(int i=0;i<seg;i++){
-        double a=2*M_PI*i/seg;
-        glVertex3d(r*cos(a),r*sin(a),0);
+    // CN Tower diamond
+    if(!s.truePath.empty()){
+        auto p=sc(s.truePath[0]); double ds=0.06;
+        glLineWidth(2); glColor4f(0.3f,1,0.4f,0.9f);
+        glBegin(GL_LINE_LOOP);
+        glVertex2d(p[0],p[1]+ds); glVertex2d(p[0]+ds,p[1]);
+        glVertex2d(p[0],p[1]-ds); glVertex2d(p[0]-ds,p[1]);
+        glEnd();
+    }
+
+    // True path — white
+    glLineWidth(2.5f); glColor4f(0.9f,0.9f,0.9f,0.9f);
+    glBegin(GL_LINE_STRIP);
+    for(int i=0;i<=animStep&&i<(int)s.truePath.size();i++){
+        auto p=sc(s.truePath[i]); glVertex2d(p[0],p[1]);
     }
     glEnd();
-}
-
-// Draw a circle in 3D around a center point (approximate no-fly zone ring)
-static void drawNoFlyZone(double cx,double cy,double cz,double r,int seg){
-    // Draw a circle in the plane perpendicular to the position vector
-    double len=sqrt(cx*cx+cy*cy+cz*cz);
-    double nx=cx/len,ny=cy/len,nz=cz/len;
-    // Find two perpendicular vectors
-    double ax=1,ay=0,az=0;
-    if(fabs(nx)>0.9){ax=0;ay=1;}
-    double bx=ny*az-nz*ay,by=nz*ax-nx*az,bz=nx*ay-ny*ax;
-    double bl=sqrt(bx*bx+by*by+bz*bz); bx/=bl;by/=bl;bz/=bl;
-    double ex=ny*bz-nz*by,ey=nz*bx-nx*bz,ez=nx*by-ny*bx;
-
-    glBegin(GL_LINE_LOOP);
-    for(int i=0;i<seg;i++){
-        double a=2*M_PI*i/seg;
-        double px=cx+r*(cos(a)*bx+sin(a)*ex);
-        double py=cy+r*(cos(a)*by+sin(a)*ey);
-        double pz=cz+r*(cos(a)*bz+sin(a)*ez);
-        glVertex3d(px,py,pz);
+    // True waypoint dots
+    for(int i=0;i<=animStep&&i<(int)s.truePath.size();i++){
+        auto p=sc(s.truePath[i]);
+        glPointSize(10); glColor3f(1,1,1);
+        glBegin(GL_POINTS); glVertex2d(p[0],p[1]); glEnd();
     }
-    glEnd();
+
+    if(isSpoof){
+        // Spoof mode: estimated stuck at CN Tower
+        auto ep=sc(s.estPath[0]);
+        double pulse=0.6+0.4*sin(glfwGetTime()*4);
+
+        // Line from fake pos to real current pos
+        if(animStep>0){
+            auto rp=sc(s.truePath[animStep]);
+            glLineWidth(3); glColor4f(1,0.4f,0.1f,0.7f);
+            glBegin(GL_LINES); glVertex2d(ep[0],ep[1]); glVertex2d(rp[0],rp[1]); glEnd();
+        }
+        // Pulsing orange X
+        glLineWidth(5); glColor4f(1,0.3f*(float)pulse,0,1);
+        double cs=0.08;
+        glBegin(GL_LINES); glVertex2d(ep[0]-cs,ep[1]-cs); glVertex2d(ep[0]+cs,ep[1]+cs); glEnd();
+        glBegin(GL_LINES); glVertex2d(ep[0]+cs,ep[1]-cs); glVertex2d(ep[0]-cs,ep[1]+cs); glEnd();
+        // Pulsing ring
+        glLineWidth(2); glColor4f(1,0.3f,0,(float)pulse*0.7f);
+        drawCircle2D(ep[0],ep[1],0.13,32,false);
+    } else {
+        // Normal mode: green path follows true
+        glLineWidth(2.5f);
+        glBegin(GL_LINE_STRIP);
+        for(int i=0;i<=animStep&&i<(int)s.estPath.size();i++){
+            glColor4f(0.2f,1,0.4f,1); auto p=sc(s.estPath[i]);
+            glVertex2d(p[0],p[1]-0.03);
+        }
+        glEnd();
+        for(int i=0;i<=animStep&&i<(int)s.estPath.size();i++){
+            auto p=sc(s.estPath[i]);
+            glPointSize(8); glColor3f(0.2f,1,0.4f);
+            glBegin(GL_POINTS); glVertex2d(p[0],p[1]-0.03); glEnd();
+        }
+    }
+
+    // Current drone pulsing dot
+    if(animStep<(int)s.truePath.size()){
+        auto p=sc(s.truePath[animStep]);
+        bool nofly=animStep<(int)s.inNoFly.size()&&s.inNoFly[animStep];
+        double pulse=0.7+0.3*sin(glfwGetTime()*5);
+        glPointSize(18*(float)pulse);
+        glColor3f(nofly?1.0f:0.2f, nofly?0.2f:0.9f, 0.2f);
+        glBegin(GL_POINTS); glVertex2d(p[0],p[1]); glEnd();
+    }
+
+    // Panel label
+    glLineWidth(2);
+    if(isSpoof){
+        // Draw "SPOOFED" indicator — orange horizontal bar at top
+        glColor4f(1,0.4f,0,0.8f);
+        glBegin(GL_LINES); glVertex2d(-1.2,0.88); glVertex2d(1.2,0.88); glEnd();
+    } else {
+        // Green bar = normal
+        glColor4f(0.2f,1,0.4f,0.6f);
+        glBegin(GL_LINES); glVertex2d(-1.2,0.88); glVertex2d(1.2,0.88); glEnd();
+    }
 }
 
-void runVisualizer(std::vector<Satellite>& satellites,
-                   const ScenarioState& scenario)
+void runVisualizer(const ScenarioState& normal, const ScenarioState& spoofed)
 {
-    if(!glfwInit()) return;
-    GLFWwindow* win=glfwCreateWindow(1100,800,
-        scenario.spoofMode ? "GNSS Simulator — SPOOFING MODE" : "GNSS Simulator — Normal Mode",
-        nullptr,nullptr);
-    if(!win){glfwTerminate();return;}
-    glfwMakeContextCurrent(win);
-    glfwSetMouseButtonCallback(win,mouseButtonCB);
-    glfwSetCursorPosCallback(win,cursorCB);
-    glfwSetScrollCallback(win,scrollCB);
+    std::cout<<"Opening split-screen visualization...\n";
+    if(!glfwInit()){ std::cout<<"GLFW init failed\n"; return; }
 
-    glEnable(GL_DEPTH_TEST);
+    GLFWwindow* win=glfwCreateWindow(1400,700,
+        "GNSS Drone Simulator  |  LEFT: Normal Mode  |  RIGHT: Spoofing Mode",
+        nullptr,nullptr);
+    if(!win){ glfwTerminate(); return; }
+    glfwMakeContextCurrent(win);
     glEnable(GL_BLEND);
+    glEnable(GL_POINT_SMOOTH);
     glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);
 
-    const double earthR = 6378137.0;
-    const double S = 1.0/earthR;  // scale to unit sphere
-
-    // Scale scenario data
-    auto scale=[&](std::array<double,3> p)->std::array<double,3>{
-        return {p[0]*S, p[1]*S, p[2]*S};
-    };
-
-    double simTime=360.0;
-    double prevWall=glfwGetTime();
-    int animStep=0;
-    double stepTimer=0;
+    int animStep=0; double stepTimer=0, prevWall=glfwGetTime();
+    int totalSteps=(int)normal.truePath.size();
 
     while(!glfwWindowShouldClose(win)){
-        double now=glfwGetTime();
-        double dt=now-prevWall; prevWall=now;
+        double now=glfwGetTime(), dt=now-prevWall; prevWall=now;
         stepTimer+=dt;
-
-        // Advance animation step every 1.5 seconds
-        if(stepTimer>1.5 && animStep<(int)scenario.truePath.size()-1){
-            animStep++;
-            stepTimer=0;
-            simTime+=360.0;
-        }
-
-        for(auto& sat:satellites) sat.update(simTime);
+        if(stepTimer>1.2&&animStep<totalSteps-1){ animStep++; stepTimer=0; }
 
         int W,H; glfwGetFramebufferSize(win,&W,&H);
-        glViewport(0,0,W,H);
-        glClearColor(0.02f,0.02f,0.10f,1);
-        glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        glClearColor(0.07f,0.09f,0.13f,1); glClear(GL_COLOR_BUFFER_BIT);
 
-        // Projection
+        double asp=(double)W/H;
+
+        // ===== LEFT PANEL: Normal Mode =====
+        glViewport(0,0,W/2,H);
         glMatrixMode(GL_PROJECTION); glLoadIdentity();
-        double asp=(double)W/H, f=1.0/tan(22.5*M_PI/180);
-        double zN=0.001,zF=100;
-        double pr[16]={f/asp,0,0,0,0,f,0,0,0,0,(zF+zN)/(zN-zF),-1,0,0,2*zF*zN/(zN-zF),0};
-        glLoadMatrixd(pr);
+        glOrtho(-asp/2,asp/2,-1,1,-1,1);
         glMatrixMode(GL_MODELVIEW); glLoadIdentity();
-        applyCamera();
 
-        // Earth
-        glColor3f(0.1f,0.25f,0.55f);
-        drawSphere(1.0,48,24);
+        // Grid
+        glLineWidth(1); glColor4f(0.18f,0.2f,0.28f,1);
+        for(int i=-20;i<=20;i++){
+            glBegin(GL_LINES); glVertex2d(i*0.2,-2); glVertex2d(i*0.2,2); glEnd();
+            glBegin(GL_LINES); glVertex2d(-2,i*0.2); glVertex2d(2,i*0.2); glEnd();
+        }
+        // Divider hint
+        glLineWidth(1); glColor4f(0.4f,0.4f,0.4f,0.5f);
+        glBegin(GL_LINES); glVertex2d(asp/2-0.01,-2); glVertex2d(asp/2-0.01,2); glEnd();
 
-        // Equator
-        glColor3f(0.25f,0.25f,0.5f);
-        glLineWidth(1);
-        drawCircleXY(1.001,64);
+        drawPanel(normal, animStep, 0, W/2, H, false);
 
-        // Satellite orbital rings
-        glLineWidth(1);
-        for(int p=0;p<6;p++){
-            glPushMatrix();
-            glRotated(p*60,0,0,1);
-            glRotated(55,1,0,0);
-            glColor3f(0.15f,0.15f,0.15f);
-            drawCircleXY(26571000.0*S,64);
-            glPopMatrix();
+        // ===== RIGHT PANEL: Spoof Mode =====
+        glViewport(W/2,0,W/2,H);
+        glMatrixMode(GL_PROJECTION); glLoadIdentity();
+        glOrtho(-asp/2,asp/2,-1,1,-1,1);
+        glMatrixMode(GL_MODELVIEW); glLoadIdentity();
+
+        // Grid
+        glLineWidth(1); glColor4f(0.18f,0.2f,0.28f,1);
+        for(int i=-20;i<=20;i++){
+            glBegin(GL_LINES); glVertex2d(i*0.2,-2); glVertex2d(i*0.2,2); glEnd();
+            glBegin(GL_LINES); glVertex2d(-2,i*0.2); glVertex2d(2,i*0.2); glEnd();
         }
 
-        // Satellites
-        double recPos[3]={0,0,0};
-        if(!scenario.truePath.empty()){
-            auto p=scale(scenario.truePath[animStep]);
-            recPos[0]=p[0];recPos[1]=p[1];recPos[2]=p[2];
-        }
-        double recMag=sqrt(recPos[0]*recPos[0]+recPos[1]*recPos[1]+recPos[2]*recPos[2]);
-
-        for(auto& sat:satellites){
-            double sx=sat.getX()*S,sy=sat.getY()*S,sz=sat.getZ()*S;
-            glPointSize(5);
-            glColor3f(1,0.9f,0.2f);
-            glBegin(GL_POINTS); glVertex3d(sx,sy,sz); glEnd();
-
-            // Signal lines to current drone position
-            double dot=sx*recPos[0]+sy*recPos[1]+sz*recPos[2];
-            double sm=sqrt(sx*sx+sy*sy+sz*sz);
-            if(recMag>0 && dot/(sm*recMag)>0){
-                glColor4f(0.2f,1,0.3f,0.15f);
-                glBegin(GL_LINES);
-                glVertex3d(sx,sy,sz);
-                glVertex3d(recPos[0],recPos[1],recPos[2]);
-                glEnd();
-            }
-        }
-
-        // No-fly zone ring — red
-        auto pear=scale(scenario.pearsonPos);
-        glColor3f(1,0.1f,0.1f);
-        glLineWidth(2);
-        drawNoFlyZone(pear[0],pear[1],pear[2], scenario.noFlyRadius*S, 64);
-
-        // True path — white
-        glLineWidth(2);
-        glColor3f(0.9f,0.9f,0.9f);
-        glBegin(GL_LINE_STRIP);
-        for(int i=0;i<=animStep && i<(int)scenario.truePath.size();i++){
-            auto p=scale(scenario.truePath[i]);
-            glVertex3d(p[0],p[1],p[2]);
-        }
-        glEnd();
-
-        // Estimated path — green if normal, orange if spoofed
-        glLineWidth(2);
-        glBegin(GL_LINE_STRIP);
-        for(int i=0;i<=animStep && i<(int)scenario.estPath.size();i++){
-            bool det = i<(int)scenario.spoofDetected.size() && scenario.spoofDetected[i];
-            if(det) glColor3f(1,0.4f,0);      // orange = detected
-            else    glColor3f(0.2f,1,0.4f);   // green  = clean
-            auto p=scale(scenario.estPath[i]);
-            glVertex3d(p[0],p[1],p[2]);
-        }
-        glEnd();
-
-        // Current drone dot
-        bool curDet = animStep<(int)scenario.spoofDetected.size() && scenario.spoofDetected[animStep];
-        glPointSize(12);
-        glColor3f(curDet ? 1.0f : 0.2f, curDet ? 0.2f : 1.0f, 0.2f);
-        glBegin(GL_POINTS);
-        glVertex3d(recPos[0],recPos[1],recPos[2]);
-        glEnd();
-
-        // Estimated drone dot
-        if(animStep<(int)scenario.estPath.size()){
-            auto ep=scale(scenario.estPath[animStep]);
-            glPointSize(8);
-            glColor3f(1,1,0.2f);
-            glBegin(GL_POINTS); glVertex3d(ep[0],ep[1],ep[2]); glEnd();
-        }
+        drawPanel(spoofed, animStep, W/2, W/2, H, true);
 
         glfwSwapBuffers(win);
         glfwPollEvents();
     }
-
     glfwDestroyWindow(win);
     glfwTerminate();
 }
